@@ -1,85 +1,71 @@
-name: Build crDroid 16.0 Kernel - OnePlus 11
+name: Build LineageOS for salami
 
 on:
   workflow_dispatch: # 手动触发编译
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
-      - name: Maximize Build Space
-        uses: easimon/maximize-build-space@main
+      - name: 1. 清理磁盘空间 (核心步骤)
+        uses: jlumbroso/free-disk-space@main
         with:
-          root-reserve-mb: 8192
-          temp-reserve-mb: 2048
-          remove-dotnet: 'true'
-          remove-android: 'true'
-          remove-haskell: 'true'
+          tool-cache: false
+          android: false # 释放自带的 Android 库以留出空间
+          dotnet: true
+          haskell: true
+          swap: true
 
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Dependencies
+      - name: 2. 安装编译环境
         run: |
           sudo apt update
-          sudo apt install -y git-core gnupg flex bison build-essential python3 \
-            zip curl zlib1g-dev libncurses5-dev libssl-dev bc libelf-dev libxml2-bin \
-            tar python3-pip lz4 wget pahole
+          sudo apt install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git git-lfs gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev libelf-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.1-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev
+          mkdir -p ~/bin
+          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          chmod a+x ~/bin/repo
+          echo "$HOME/bin" >> $GITHUB_PATH
 
-      - name: Sync Source Code
+      - name: 3. 配置 Git
         run: |
-          # 克隆主内核 (Branch 16.0)
-          git clone https://github.com/crdroidandroid/android_kernel_oneplus_sm8550.git -b 16.0 kernel-src
-          cd kernel-src
+          git config --global user.email "action@github.com"
+          git config --global user.name "GitHub Action"
+
+      - name: 4. 初始化源码仓库 (Lineage-21)
+        run: |
+          mkdir android
+          cd android
+          repo init -u https://github.com/LineageOS/android.git -b lineage-21.0 --git-lfs
           
-          # 克隆模块仓库到正确位置
-          git clone https://github.com/crdroidandroid/android_kernel_oneplus_sm8550-modules.git -b 16.0 modules
+      - name: 5. 同步源码
+        run: |
+          cd android
+          repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags
+
+      - name: 6. 准备 salami 专有文件
+        run: |
+          cd android
+          source build/envsetup.sh
+          # 注意：此步会自动拉取 device/xiaomi/salami 仓库
+          breakfast salami
           
-          # 克隆设备树仓库
-          git clone https://github.com/crdroidandroid/android_kernel_oneplus_sm8550-devicetrees.git -b 16.0 devicetree
+      - name: 7. 设置 Ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ccache-salami
+          max-size: 10G
 
-      - name: Setup KernelSU Next
+      - name: 8. 开始编译
         run: |
-          cd kernel-src
-          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s next
-          # 注入配置到 defconfig
-          echo "CONFIG_KSU=y" >> arch/arm64/configs/vendor/kalama_GKI.config
-          echo "CONFIG_OVERLAY_FS=y" >> arch/arm64/configs/vendor/kalama_GKI.config
+          cd android
+          source build/envsetup.sh
+          export USE_CCACHE=1
+          export CCACHE_EXEC=$(which ccache)
+          breakfast salami
+          brunch salami
+        continue-on-error: false
 
-      - name: Download Clang Toolchain
-        run: |
-          mkdir clang
-          # 使用 AOSP 官方 Clang r522815
-          wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r522815.tar.gz
-          tar -C clang -xf clang-r522815.tar.gz
-
-      - name: Build Kernel
-        run: |
-          cd kernel-src
-          export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
-          
-          # 编译命令
-          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 \
-               CROSS_COMPILE=aarch64-linux-gnu- \
-               CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
-               vendor/kalama_GKI.config
-          
-          make -j$(nproc) O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 \
-               CROSS_COMPILE=aarch64-linux-gnu- \
-               CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
-               NM=llvm-nm OBJCOPY=llvm-objcopy LD=ld.lld
-
-      - name: Package AnyKernel3
-        run: |
-          git clone https://github.com/osm0sis/AnyKernel3.git
-          cp kernel-src/out/arch/arm64/boot/Image AnyKernel3/
-          cd AnyKernel3
-          # 修改适配一加11
-          sed -i 's/device.name1=maguro/device.name1=salami/g' anykernel.sh
-          zip -r9 ../OnePlus11-crDroid16-KSU.zip *
-
-      - name: Upload Artifact
+      - name: 9. 上传编译产物
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-KSU-OnePlus11
-          path: OnePlus11-crDroid16-KSU.zip
+          name: LineageOS-salami
+          path: android/out/target/product/salami/*.zip

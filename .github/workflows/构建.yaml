@@ -1,0 +1,87 @@
+name: Build crDroid OnePlus 11 Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      FEIL:
+        description: '构建产物名称'
+        default: 'Salami'
+      lz4kd:
+        description: '启用 lz4kd'
+        default: 'true'
+      KERNEL_VERSION:
+        description: '内核版本'
+        default: '5.15'
+
+jobs:
+  build:
+    name: For ${{ github.event.inputs.FEIL }} lz4kd ${{ github.event.inputs.lz4kd }}
+    runs-on: ubuntu-latest
+    env:
+      # 严格匹配图片所示编译器版本 r563880c
+      CLANG_VERSION: clang-r563880c
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+      CCACHE_MAXSIZE: 8G
+
+    steps:
+    - name: "🚀 Maximize Build Space | 最大化构建空间"
+      if: ${{ github.event.inputs.KERNEL_VERSION == '5.10' || github.event.inputs.KERNEL_VERSION == '5.15' }}
+      uses: easimon/maximize-build-space@master
+      with:
+        root-reserve-mb: 8192
+        temp-reserve-mb: 4096
+        remove-dotnet: 'true'
+        remove-android: 'true'
+        remove-haskell: 'true'
+        remove-codeql: 'true'
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y git bc bison flex libssl-dev make zip ccache libelf-dev dwarves
+
+    - name: Cache Clang
+      id: cache-clang
+      uses: actions/cache@v4
+      with:
+        path: ${{ github.workspace }}/clang-aosp
+        key: ${{ env.CLANG_VERSION }}
+
+    - name: Download Clang
+      if: steps.cache-clang.outputs.cache-hit != 'true'
+      run: |
+        mkdir -p clang-aosp
+        wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/${{ env.CLANG_VERSION }}.tar.gz
+        tar -C clang-aosp -zxf ${{ env.CLANG_VERSION }}.tar.gz
+
+    - name: Clone Sources
+      run: |
+        # 使用 sm8550 目录名
+        git clone --recursive --depth=1 https://github.com/crdroidandroid/android_kernel_oneplus_sm8550 -b 16.0 sm8550
+        git clone --recursive --depth=1 https://github.com/crdroidandroid/android_kernel_oneplus_sm8550-modules -b 16.0 sm8550-modules
+
+    - name: Compile
+      run: |
+        cd sm8550
+        
+        # 集成 KernelSU
+        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
+        
+        # 修复 BTF 报错，直接修改目标路径
+        sed -i 's/CONFIG_DEBUG_INFO_BTF=y/CONFIG_DEBUG_INFO_BTF=n/' arch/arm64/configs/gki_defconfig
+
+        # 环境变量与编译参数
+        export PATH=${{ github.workspace }}/clang-aosp/bin:$PATH
+        MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- O=out"
+        
+        # 按照要求合并配置并启动编译
+        make $MAKE_ARGS gki_defconfig vendor/kalama_GKI.config vendor/oplus/kalama_GKI.config
+        make -j$(nproc --all) $MAKE_ARGS
+
+    - name: Upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ github.event.inputs.FEIL }}-Kernel
+        path: sm8550/out/arch/arm64/boot/Image

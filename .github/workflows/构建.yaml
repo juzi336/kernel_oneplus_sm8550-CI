@@ -9,6 +9,9 @@ on:
       lz4kd:
         description: '启用 lz4kd'
         default: 'true'
+      proxy:
+        description: '开启代理优化 (On/Off)'
+        default: 'On'
       KERNEL_VERSION:
         description: '内核版本'
         default: '5.15'
@@ -18,7 +21,6 @@ jobs:
     name: For ${{ github.event.inputs.FEIL }} lz4kd ${{ github.event.inputs.lz4kd }}
     runs-on: ubuntu-latest
     env:
-      # 使用你指定的 r547379 工具链
       CLANG_VERSION: clang-r547379
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
@@ -26,7 +28,7 @@ jobs:
       CCACHE_MAXSIZE: 8G
 
     steps:
-    - name: "🚀 Maximize Build Space | 最大化构建空间"
+    - name: "🚀 Maximize Build Space"
       if: ${{ github.event.inputs.KERNEL_VERSION == '5.10' || github.event.inputs.KERNEL_VERSION == '5.15' }}
       uses: easimon/maximize-build-space@master
       with:
@@ -53,13 +55,11 @@ jobs:
       if: steps.cache-clang.outputs.cache-hit != 'true'
       run: |
         mkdir -p clang-aosp
-        # 必须使用 +archive 接口才能下载到压缩包
         wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/${{ env.CLANG_VERSION }}.tar.gz
         tar -C clang-aosp -zxvf ${{ env.CLANG_VERSION }}.tar.gz
 
     - name: Clone Sources
       run: |
-        # 目录名设为 sm8550
         git clone --recursive --depth=1 https://github.com/crdroidandroid/android_kernel_oneplus_sm8550 -b 16.0 sm8550
         git clone --recursive --depth=1 https://github.com/crdroidandroid/android_kernel_oneplus_sm8550-modules -b 16.0 sm8550-modules
 
@@ -70,8 +70,48 @@ jobs:
         # 集成 KernelSU
         curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
         
-        # 修复 BTF 报错
-        sed -i 's/CONFIG_DEBUG_INFO_BTF=y/CONFIG_DEBUG_INFO_BTF=n/' arch/arm64/configs/gki_defconfig
+        # 定义配置文件路径
+        DEFCONFIG=arch/arm64/configs/gki_defconfig
+        
+        # 1. 加入代理优化配置
+        if [ "${{ github.event.inputs.proxy }}" == "On" ]; then
+          echo "📦 加入代理优化..."
+          echo "CONFIG_BPF_STREAM_PARSER=y" >> $DEFCONFIG
+          echo "CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y" >> $DEFCONFIG
+          echo "CONFIG_NETFILTER_XT_SET=y" >> $DEFCONFIG
+          echo "CONFIG_IP_SET=y" >> $DEFCONFIG
+          echo "CONFIG_IP_SET_MAX=65534" >> $DEFCONFIG
+          echo "CONFIG_IP_SET_BITMAP_IP=y" >> $DEFCONFIG
+          echo "CONFIG_IP_SET_BITMAP_IPMAC=y" >> $DEFCONFIG
+          echo "CONFIG_IP_SET_BITMAP_PORT=y" >> $DEFCONFIG
+          echo "CONFIG_IP_SET_HASH_IP=y" >> $DEFCONFIG
+          echo "CONFIG_IP_SET_HASH_IPMARK=y" >> $DEFCONFIG
+          echo "CONFIG_IP_SET_HASH_IPPORT=y" >> $DEFCONFIG
+          echo "CONFIG_IP_SET_HASH_IPPORTIP=y" >> $DEFCONFIG
+          echo "CONFIG_IP_SET_HASH_IPPORTNET=y" >> $DEFCONFIG
+          echo "CONFIG_IP_SET_HASH_IPMAC=y" >> $DEFCONFIG
+          echo "CONFIG_IP_SET_HASH_MAC=y" >> $DEFCONFIG
+          echo "CONFIG_IP_SET_HASH_NETPORTNET=y" >> $DEFCONFIG
+          echo "CONFIG_IP_SET_HASH_NET=y" >> $DEFCONFIG
+          echo "CONFIG_IP_SET_HASH_NETNET=y" >> $DEFCONFIG
+          echo "CONFIG_IP_SET_HASH_NETPORT=y" >> $DEFCONFIG
+          echo "CONFIG_IP_SET_HASH_NETIFACE=y" >> $DEFCONFIG
+          echo "CONFIG_IP_SET_LIST_SET=y" >> $DEFCONFIG
+          echo "CONFIG_IP6_NF_NAT=y" >> $DEFCONFIG
+          echo "CONFIG_IP6_NF_TARGET_MASQUERADE=y" >> $DEFCONFIG
+        fi
+
+        # 2. 针对 5.10/5.15 系配置 ThinLTO
+        if [ "${{ github.event.inputs.KERNEL_VERSION }}" = "5.10" ] || [ "${{ github.event.inputs.KERNEL_VERSION }}" = "5.15" ]; then
+          echo "📦 正在为5.10系与5.15系配置lto中..."
+          sed -i 's/^CONFIG_LTO=n/CONFIG_LTO=y/' "$DEFCONFIG"
+          sed -i 's/^CONFIG_LTO_CLANG_FULL=y/CONFIG_LTO_CLANG_THIN=y/' "$DEFCONFIG"
+          sed -i 's/^CONFIG_LTO_CLANG_NONE=y/CONFIG_LTO_CLANG_THIN=y/' "$DEFCONFIG"
+          grep -q '^CONFIG_LTO_CLANG_THIN=y' "$DEFCONFIG" || echo 'CONFIG_LTO_CLANG_THIN=y' >> "$DEFCONFIG"
+        fi
+
+        # 3. 修复 BTF 报错
+        sed -i 's/CONFIG_DEBUG_INFO_BTF=y/CONFIG_DEBUG_INFO_BTF=n/' $DEFCONFIG
 
         # 环境变量与编译参数
         export PATH=${{ github.workspace }}/clang-aosp/bin:$PATH
@@ -81,7 +121,7 @@ jobs:
         make $MAKE_ARGS gki_defconfig vendor/kalama_GKI.config vendor/oplus/kalama_GKI.config
         make -j$(nproc --all) $MAKE_ARGS
 
-    - name: Upload
+- name: Upload
       uses: actions/upload-artifact@v4
       with:
         name: ${{ github.event.inputs.FEIL }}-Kernel

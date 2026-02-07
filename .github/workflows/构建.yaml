@@ -21,6 +21,7 @@ jobs:
     name: For ${{ github.event.inputs.FEIL }} lz4kd ${{ github.event.inputs.lz4kd }}
     runs-on: ubuntu-latest
     env:
+      # 使用指定的 r547379 工具链
       CLANG_VERSION: clang-r547379
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
@@ -28,7 +29,7 @@ jobs:
       CCACHE_MAXSIZE: 8G
 
     steps:
-    - name: "🚀 Maximize Build Space"
+    - name: "🚀 Maximize Build Space | 最大化构建空间"
       if: ${{ github.event.inputs.KERNEL_VERSION == '5.10' || github.event.inputs.KERNEL_VERSION == '5.15' }}
       uses: easimon/maximize-build-space@master
       with:
@@ -55,13 +56,17 @@ jobs:
       if: steps.cache-clang.outputs.cache-hit != 'true'
       run: |
         mkdir -p clang-aosp
+        # 使用 +archive 接口下载压缩包
         wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/${{ env.CLANG_VERSION }}.tar.gz
         tar -C clang-aosp -zxvf ${{ env.CLANG_VERSION }}.tar.gz
 
     - name: Clone Sources
       run: |
+        # 内核目录 sm8550
         git clone --recursive --depth=1 https://github.com/crdroidandroid/android_kernel_oneplus_sm8550 -b 16.0 sm8550
         git clone --recursive --depth=1 https://github.com/crdroidandroid/android_kernel_oneplus_sm8550-modules -b 16.0 sm8550-modules
+        # 克隆 AnyKernel3 模板
+        git clone --depth=1 https://github.com/osm0sis/AnyKernel3 AnyKernel3
 
     - name: Compile
       run: |
@@ -70,10 +75,9 @@ jobs:
         # 集成 KernelSU
         curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
         
-        # 定义配置文件路径
         DEFCONFIG=arch/arm64/configs/gki_defconfig
         
-        # 1. 加入代理优化配置
+        # 1. 代理优化逻辑
         if [ "${{ github.event.inputs.proxy }}" == "On" ]; then
           echo "📦 加入代理优化..."
           echo "CONFIG_BPF_STREAM_PARSER=y" >> $DEFCONFIG
@@ -101,9 +105,9 @@ jobs:
           echo "CONFIG_IP6_NF_TARGET_MASQUERADE=y" >> $DEFCONFIG
         fi
 
-        # 2. 针对 5.10/5.15 系配置 ThinLTO
+        # 2. 5.10/5.15 LTO 配置
         if [ "${{ github.event.inputs.KERNEL_VERSION }}" = "5.10" ] || [ "${{ github.event.inputs.KERNEL_VERSION }}" = "5.15" ]; then
-          echo "📦 正在为5.10系与5.15系配置lto中..."
+          echo "📦 正在配置 ThinLTO..."
           sed -i 's/^CONFIG_LTO=n/CONFIG_LTO=y/' "$DEFCONFIG"
           sed -i 's/^CONFIG_LTO_CLANG_FULL=y/CONFIG_LTO_CLANG_THIN=y/' "$DEFCONFIG"
           sed -i 's/^CONFIG_LTO_CLANG_NONE=y/CONFIG_LTO_CLANG_THIN=y/' "$DEFCONFIG"
@@ -113,16 +117,22 @@ jobs:
         # 3. 修复 BTF 报错
         sed -i 's/CONFIG_DEBUG_INFO_BTF=y/CONFIG_DEBUG_INFO_BTF=n/' $DEFCONFIG
 
-        # 环境变量与编译参数
         export PATH=${{ github.workspace }}/clang-aosp/bin:$PATH
         MAKE_ARGS="ARCH=arm64 LLVM=1 LLVM_IAS=1 CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- O=out"
         
-        # 按照要求合并配置并启动编译
         make $MAKE_ARGS gki_defconfig vendor/kalama_GKI.config vendor/oplus/kalama_GKI.config
         make -j$(nproc --all) $MAKE_ARGS
+
+    - name: 📦 Package with AnyKernel3
+      run: |
+        cp sm8550/out/arch/arm64/boot/Image AnyKernel3/
+        cd AnyKernel3
+        sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+        sed -i "s/kernel.string=.*/kernel.string=${{ github.event.inputs.FEIL }} Kernel/g" anykernel.sh
+        zip -r9 "../${{ github.event.inputs.FEIL }}-Kernel.zip" * -x .git* README.md
 
     - name: Upload
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ github.event.inputs.FEIL }}-Kernel
-        path: sm8550/out/arch/arm64/boot/Image
+        name: ${{ github.event.inputs.FEIL }}-Kernel-Zip
+        path: "*.zip"

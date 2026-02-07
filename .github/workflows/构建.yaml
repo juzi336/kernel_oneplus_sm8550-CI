@@ -121,7 +121,7 @@ jobs:
         make $MAKE_ARGS gki_defconfig vendor/kalama_GKI.config vendor/oplus/kalama_GKI.config
         make -j$(nproc --all) $MAKE_ARGS
 
-- name: Upload
+    - name: Upload
       uses: actions/upload-artifact@v4
       with:
         name: ${{ github.event.inputs.FEIL }}-Kernel

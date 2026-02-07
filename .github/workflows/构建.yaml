@@ -18,8 +18,8 @@ jobs:
     name: For ${{ github.event.inputs.FEIL }} lz4kd ${{ github.event.inputs.lz4kd }}
     runs-on: ubuntu-latest
     env:
-      # 严格匹配图片所示编译器版本 r563880c
-      CLANG_VERSION: clang-r563880c
+      # 使用你指定的 r547379 工具链
+      CLANG_VERSION: clang-r547379
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
       CCACHE_HARDLINK: "true"
@@ -53,12 +53,13 @@ jobs:
       if: steps.cache-clang.outputs.cache-hit != 'true'
       run: |
         mkdir -p clang-aosp
+        # 必须使用 +archive 接口才能下载到压缩包
         wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/${{ env.CLANG_VERSION }}.tar.gz
-        tar -C clang-aosp -zxf ${{ env.CLANG_VERSION }}.tar.gz
+        tar -C clang-aosp -zxvf ${{ env.CLANG_VERSION }}.tar.gz
 
     - name: Clone Sources
       run: |
-        # 使用 sm8550 目录名
+        # 目录名设为 sm8550
         git clone --recursive --depth=1 https://github.com/crdroidandroid/android_kernel_oneplus_sm8550 -b 16.0 sm8550
         git clone --recursive --depth=1 https://github.com/crdroidandroid/android_kernel_oneplus_sm8550-modules -b 16.0 sm8550-modules
 
@@ -69,7 +70,7 @@ jobs:
         # 集成 KernelSU
         curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
         
-        # 修复 BTF 报错，直接修改目标路径
+        # 修复 BTF 报错
         sed -i 's/CONFIG_DEBUG_INFO_BTF=y/CONFIG_DEBUG_INFO_BTF=n/' arch/arm64/configs/gki_defconfig
 
         # 环境变量与编译参数
